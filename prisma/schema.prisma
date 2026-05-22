@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Store {
+  id        String   @id @default(uuid())
+  name      String
+  address   String?
+  floorMapUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  shelves   Shelf[]
+  audits    Audit[]
+  shelfPositions ShelfPosition[]
+}
+
+model Shelf {
+  id           String   @id @default(uuid())
+  storeId      String
+  shelfNumber  String
+  category     String?
+  shelvesCount Int      @default(6)
+  planogramUrl String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  store        Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  audits       Audit[]
+  shelfPositions ShelfPosition[]
+  planogramImages PlanogramImage[]
+}
+
+model PlanogramImage {
+  id        String   @id @default(uuid())
+  shelfId   String
+  imageUrl  String
+  sortOrder Int      @default(0)
+  label     String?
+  createdAt DateTime @default(now())
+  shelf     Shelf    @relation(fields: [shelfId], references: [id], onDelete: Cascade)
+}
+
+model ShelfPosition {
+  id      String @id @default(uuid())
+  storeId String
+  shelfId String
+  x       Float
+  y       Float
+  width   Float  @default(40)
+  height  Float  @default(40)
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  shelf   Shelf  @relation(fields: [shelfId], references: [id], onDelete: Cascade)
+}
+
+model Audit {
+  id              String       @id @default(uuid())
+  storeId         String
+  shelfId         String
+  merchandiserName String?
+  status          String       @default("in_progress")
+  complianceScore Float?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  store           Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  shelf           Shelf        @relation(fields: [shelfId], references: [id], onDelete: Cascade)
+  photos          AuditPhoto[]
+  violations      Violation[]
+}
+
+model AuditPhoto {
+  id         String   @id @default(uuid())
+  auditId    String
+  shelfLevel Int
+  photoUrl   String
+  createdAt  DateTime @default(now())
+  audit      Audit    @relation(fields: [auditId], references: [id], onDelete: Cascade)
+}
+
+model Violation {
+  id          String   @id @default(uuid())
+  auditId     String
+  type        String
+  productName String?
+  articleNumber String?
+  shelfLevel  Int?
+  position    Int?
+  description String
+  photoUrl    String?
+  comment     String?
+  isFixed     Boolean  @default(false)
+  fixedPhotoUrl String?
+  createdAt   DateTime @default(now())
+  audit       Audit    @relation(fields: [auditId], references: [id], onDelete: Cascade)
+}

@@ -1,0 +1,29 @@
+{
+  "planogram_id": "test_plan_001",
+  "fixture_id": "shelf_softdrinks_1",
+  "shelves": [
+    {
+      "row": 0,
+      "slots": [
+        {"sku_id": "COCA_COLA_05", "facings": 3, "width_units": 1.5},
+        {"sku_id": "PEPSI_05", "facings": 2, "width_units": 1.0},
+        {"sku_id": "FANTA_05", "facings": 2, "width_units": 1.0}
+      ]
+    },
+    {
+      "row": 1,
+      "slots": [
+        {"sku_id": "SPRITE_05", "facings": 2, "width_units": 1.0},
+        {"sku_id": "SCHWEPPES_05", "facings": 2, "width_units": 1.0},
+        {"sku_id": "MORSHYNSKA_15", "facings": 3, "width_units": 1.5}
+      ]
+    },
+    {
+      "row": 2,
+      "slots": [
+        {"sku_id": "BONAQUA_05", "facings": 4, "width_units": 2.0},
+        {"sku_id": "ZHYVCHYK_05", "facings": 2, "width_units": 1.0}
+      ]
+    }
+  ]
+}

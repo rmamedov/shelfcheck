@@ -25,6 +25,13 @@ interface Shelf {
   store: Store;
 }
 
+type UploadMode = "per-shelf" | "single";
+
+interface ShelfSlotImage {
+  url: string;
+  label: string;
+}
+
 export default function ShelvesPage() {
   const [shelves, setShelves] = useState<Shelf[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
@@ -40,10 +47,13 @@ export default function ShelvesPage() {
   const [formNumber, setFormNumber] = useState("");
   const [formCategory, setFormCategory] = useState("");
   const [formShelvesCount, setFormShelvesCount] = useState(6);
-  const [formPlanogramUrl, setFormPlanogramUrl] = useState("");
-  const [formPlanogramImages, setFormPlanogramImages] = useState<{ url: string; label: string }[]>([]);
-  const [uploadingPlanogram, setUploadingPlanogram] = useState(false);
-  const [planogramDragOver, setPlanogramDragOver] = useState(false);
+
+  // Planogram upload state
+  const [uploadMode, setUploadMode] = useState<UploadMode>("single");
+  const [singleImage, setSingleImage] = useState<ShelfSlotImage | null>(null);
+  const [perShelfImages, setPerShelfImages] = useState<(ShelfSlotImage | null)[]>([]);
+  const [uploadingSlot, setUploadingSlot] = useState<number | null>(null);
+  const [dragOverSlot, setDragOverSlot] = useState<number | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -68,14 +78,27 @@ export default function ShelvesPage() {
     fetchData();
   }, [fetchData]);
 
+  // Reset per-shelf slots when shelvesCount changes
+  useEffect(() => {
+    setPerShelfImages((prev) => {
+      const arr = Array(formShelvesCount).fill(null) as (ShelfSlotImage | null)[];
+      // Preserve any existing images
+      for (let i = 0; i < Math.min(prev.length, formShelvesCount); i++) {
+        arr[i] = prev[i];
+      }
+      return arr;
+    });
+  }, [formShelvesCount]);
+
   function openCreateModal() {
     setEditShelf(null);
     setFormStoreId(filterStoreId || (stores[0]?.id ?? ""));
     setFormNumber("");
     setFormCategory("");
     setFormShelvesCount(6);
-    setFormPlanogramUrl("");
-    setFormPlanogramImages([]);
+    setUploadMode("single");
+    setSingleImage(null);
+    setPerShelfImages(Array(6).fill(null));
     setModalOpen(true);
   }
 
@@ -85,65 +108,125 @@ export default function ShelvesPage() {
     setFormNumber(shelf.shelfNumber);
     setFormCategory(shelf.category || "");
     setFormShelvesCount(shelf.shelvesCount);
-    setFormPlanogramUrl(shelf.planogramUrl || "");
-    setFormPlanogramImages(
-      (shelf.planogramImages || []).map((p) => ({ url: p.imageUrl, label: p.label || "" }))
-    );
+
+    const imgs = shelf.planogramImages || [];
+    if (imgs.length === 0) {
+      setUploadMode("single");
+      setSingleImage(null);
+      setPerShelfImages(Array(shelf.shelvesCount).fill(null));
+    } else if (imgs.length === 1 && (!imgs[0].label || imgs[0].label === "Весь стелаж")) {
+      // Single image mode
+      setUploadMode("single");
+      setSingleImage({ url: imgs[0].imageUrl, label: imgs[0].label || "Весь стелаж" });
+      setPerShelfImages(Array(shelf.shelvesCount).fill(null));
+    } else {
+      // Per-shelf mode
+      setUploadMode("per-shelf");
+      setSingleImage(null);
+      const slots: (ShelfSlotImage | null)[] = Array(shelf.shelvesCount).fill(null);
+      for (const img of imgs) {
+        const idx = img.sortOrder;
+        if (idx >= 0 && idx < shelf.shelvesCount) {
+          slots[idx] = { url: img.imageUrl, label: img.label || `Полиця ${idx + 1}` };
+        }
+      }
+      setPerShelfImages(slots);
+    }
+
     setModalOpen(true);
   }
 
-  async function handlePlanogramUpload(files: FileList | File[]) {
-    setUploadingPlanogram(true);
+  async function uploadFile(file: File): Promise<string | null> {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("type", "planograms");
+    const res = await fetch("/api/upload", { method: "POST", body: fd });
+    const data = await res.json();
+    return data.url || null;
+  }
+
+  // Single image handlers
+  async function handleSingleUpload(files: FileList | File[]) {
+    const file = Array.from(files).find((f) => f.type.startsWith("image/"));
+    if (!file) return;
+    setUploadingSlot(-1);
     try {
-      const fileArray = Array.from(files).filter((f) => f.type.startsWith("image/"));
-      const uploaded: { url: string; label: string }[] = [];
-      for (const file of fileArray) {
-        const fd = new FormData();
-        fd.append("file", file);
-        fd.append("type", "planograms");
-        const res = await fetch("/api/upload", { method: "POST", body: fd });
-        const data = await res.json();
-        if (data.url) {
-          uploaded.push({ url: data.url, label: file.name.replace(/\.[^.]+$/, "") });
-        }
-      }
-      setFormPlanogramImages((prev) => [...prev, ...uploaded]);
-      // Also set first image as main planogramUrl for backward compat
-      if (uploaded.length > 0 && !formPlanogramUrl) {
-        setFormPlanogramUrl(uploaded[0].url);
+      const url = await uploadFile(file);
+      if (url) {
+        setSingleImage({ url, label: "Весь стелаж" });
       }
     } finally {
-      setUploadingPlanogram(false);
+      setUploadingSlot(null);
     }
   }
 
-  function handlePlanogramDrop(e: React.DragEvent) {
+  // Per-shelf handlers
+  async function handlePerShelfUpload(slotIndex: number, files: FileList | File[]) {
+    const file = Array.from(files).find((f) => f.type.startsWith("image/"));
+    if (!file) return;
+    setUploadingSlot(slotIndex);
+    try {
+      const url = await uploadFile(file);
+      if (url) {
+        setPerShelfImages((prev) => {
+          const next = [...prev];
+          next[slotIndex] = { url, label: `Полиця ${slotIndex + 1}` };
+          return next;
+        });
+      }
+    } finally {
+      setUploadingSlot(null);
+    }
+  }
+
+  function handleDrop(slotIndex: number, e: React.DragEvent) {
     e.preventDefault();
-    setPlanogramDragOver(false);
+    setDragOverSlot(null);
     const files = e.dataTransfer.files;
-    if (files.length > 0) handlePlanogramUpload(files);
+    if (files.length > 0) {
+      if (slotIndex === -1) {
+        handleSingleUpload(files);
+      } else {
+        handlePerShelfUpload(slotIndex, files);
+      }
+    }
   }
 
-  function handlePlanogramFileInput(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = e.target.files;
-    if (files && files.length > 0) handlePlanogramUpload(files);
+  function removeImage(slotIndex: number) {
+    if (slotIndex === -1) {
+      setSingleImage(null);
+    } else {
+      setPerShelfImages((prev) => {
+        const next = [...prev];
+        next[slotIndex] = null;
+        return next;
+      });
+    }
   }
 
-  function removePlanogramImage(index: number) {
-    setFormPlanogramImages((prev) => prev.filter((_, i) => i !== index));
+  // Collect all images for save
+  function collectPlanogramImages(): ShelfSlotImage[] {
+    if (uploadMode === "single") {
+      return singleImage ? [singleImage] : [];
+    }
+    return perShelfImages
+      .map((img, idx) => (img ? { ...img, label: `Полиця ${idx + 1}` } : null))
+      .filter((x): x is ShelfSlotImage => x !== null);
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
     try {
+      const images = collectPlanogramImages();
       const payload = {
         storeId: formStoreId,
         shelfNumber: formNumber,
         category: formCategory || null,
         shelvesCount: formShelvesCount,
-        planogramUrl: formPlanogramImages[0]?.url || formPlanogramUrl || null,
+        planogramUrl: images[0]?.url || null,
       };
+
       let shelfId = editShelf?.id;
       if (editShelf) {
         await fetch(`/api/shelves/${editShelf.id}`, {
@@ -162,18 +245,18 @@ export default function ShelvesPage() {
       }
 
       // Save planogram images
-      if (shelfId && formPlanogramImages.length > 0) {
+      if (shelfId) {
         // Delete existing
         await fetch(`/api/shelves/${shelfId}/planograms`, { method: "DELETE" });
         // Create new
-        for (let i = 0; i < formPlanogramImages.length; i++) {
+        for (let i = 0; i < images.length; i++) {
           await fetch(`/api/shelves/${shelfId}/planograms`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              imageUrl: formPlanogramImages[i].url,
+              imageUrl: images[i].url,
               sortOrder: i,
-              label: formPlanogramImages[i].label || `Секція ${i + 1}`,
+              label: images[i].label,
             }),
           });
         }
@@ -195,6 +278,96 @@ export default function ShelvesPage() {
     } finally {
       setDeleting(null);
     }
+  }
+
+  // --- Upload zone component ---
+  function UploadZone({
+    slotIndex,
+    image,
+    label,
+    compact,
+  }: {
+    slotIndex: number;
+    image: ShelfSlotImage | null;
+    label: string;
+    compact?: boolean;
+  }) {
+    const isUploading = uploadingSlot === slotIndex;
+    const isDragOver = dragOverSlot === slotIndex;
+
+    if (image) {
+      return (
+        <div className={`relative group ${compact ? "h-28" : "h-40"}`}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={image.url}
+            alt={label}
+            className="w-full h-full object-cover rounded-xl border border-gray-200"
+          />
+          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 rounded-xl transition-colors" />
+          <button
+            type="button"
+            onClick={() => removeImage(slotIndex)}
+            className="absolute top-2 right-2 p-1 bg-white rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-100"
+          >
+            <svg className="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+            </svg>
+          </button>
+          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent rounded-b-xl px-3 py-2">
+            <p className="text-xs text-white font-medium">{label}</p>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOverSlot(slotIndex);
+        }}
+        onDragLeave={() => setDragOverSlot(null)}
+        onDrop={(e) => handleDrop(slotIndex, e)}
+        className={`border-2 border-dashed rounded-xl flex flex-col items-center justify-center transition-colors ${
+          compact ? "h-28" : "h-40"
+        } ${isDragOver ? "border-blue-500 bg-blue-50" : "border-gray-300 hover:border-gray-400"}`}
+      >
+        {isUploading ? (
+          <div className="flex flex-col items-center gap-1.5">
+            <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+            <p className="text-[11px] text-gray-500">Завантаження...</p>
+          </div>
+        ) : (
+          <>
+            <svg className={`text-gray-300 ${compact ? "w-6 h-6" : "w-8 h-8"} mb-1.5`} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3 3h18M3 3v18m0-18h.257M21 3v18M3 21h18" />
+            </svg>
+            <p className={`text-gray-500 font-medium ${compact ? "text-[11px]" : "text-xs"}`}>
+              {label}
+            </p>
+            <label className={`text-blue-600 hover:text-blue-700 cursor-pointer font-medium ${compact ? "text-[10px]" : "text-[11px]"}`}>
+              Обрати файл
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    if (slotIndex === -1) {
+                      handleSingleUpload(e.target.files);
+                    } else {
+                      handlePerShelfUpload(slotIndex, e.target.files);
+                    }
+                  }
+                  e.target.value = "";
+                }}
+                className="hidden"
+              />
+            </label>
+          </>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -252,60 +425,70 @@ export default function ShelvesPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {shelves.map((shelf) => (
-            <div
-              key={shelf.id}
-              className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col"
-            >
-              {/* Planogram thumbnail */}
-              <div className="h-32 bg-gray-50 flex items-center justify-center">
-                {shelf.planogramUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={shelf.planogramUrl}
-                    alt="Planogram"
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <svg className="w-10 h-10 text-gray-300" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M2.25 18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V6a2.25 2.25 0 0 0-2.25-2.25H4.5A2.25 2.25 0 0 0 2.25 6v12Z" />
-                  </svg>
-                )}
-              </div>
+          {shelves.map((shelf) => {
+            const imgCount = shelf.planogramImages?.length || 0;
+            return (
+              <div
+                key={shelf.id}
+                className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col"
+              >
+                {/* Planogram thumbnail */}
+                <div className="h-32 bg-gray-50 flex items-center justify-center relative">
+                  {shelf.planogramUrl ? (
+                    <>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={shelf.planogramUrl}
+                        alt="Planogram"
+                        className="w-full h-full object-cover"
+                      />
+                      {imgCount > 1 && (
+                        <span className="absolute top-2 right-2 text-[10px] font-semibold bg-black/60 text-white px-1.5 py-0.5 rounded-md">
+                          {imgCount} зобр.
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <svg className="w-10 h-10 text-gray-300" fill="none" viewBox="0 0 24 24" strokeWidth={1} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M2.25 18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V6a2.25 2.25 0 0 0-2.25-2.25H4.5A2.25 2.25 0 0 0 2.25 6v12Z" />
+                    </svg>
+                  )}
+                </div>
 
-              <div className="p-4 flex-1 flex flex-col">
-                <div className="flex items-start justify-between mb-1">
-                  <h3 className="text-sm font-semibold text-gray-900">
-                    Стелаж {shelf.shelfNumber}
-                  </h3>
-                  <span className="shrink-0 text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
-                    {shelf.shelvesCount} полиць
-                  </span>
-                </div>
-                <p className="text-xs text-gray-500">{shelf.store.name}</p>
-                {shelf.category && (
-                  <span className="mt-1.5 inline-block self-start px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-md font-medium">
-                    {shelf.category}
-                  </span>
-                )}
-                <div className="mt-auto pt-3 flex gap-2">
-                  <button
-                    onClick={() => openEditModal(shelf)}
-                    className="flex-1 px-2 py-1.5 text-xs font-medium text-gray-600 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
-                  >
-                    Редагувати
-                  </button>
-                  <button
-                    onClick={() => handleDelete(shelf.id)}
-                    disabled={deleting === shelf.id}
-                    className="px-2 py-1.5 text-xs font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
-                  >
-                    {deleting === shelf.id ? "..." : "Видалити"}
-                  </button>
+                <div className="p-4 flex-1 flex flex-col">
+                  <div className="flex items-start justify-between mb-1">
+                    <h3 className="text-sm font-semibold text-gray-900">
+                      Стелаж {shelf.shelfNumber}
+                    </h3>
+                    <span className="shrink-0 text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
+                      {shelf.shelvesCount} полиць
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500">{shelf.store.name}</p>
+                  {shelf.category && (
+                    <span className="mt-1.5 inline-block self-start px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-md font-medium">
+                      {shelf.category}
+                    </span>
+                  )}
+                  <div className="mt-auto pt-3 flex gap-2">
+                    <button
+                      onClick={() => openEditModal(shelf)}
+                      className="flex-1 px-2 py-1.5 text-xs font-medium text-gray-600 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                    >
+                      Редагувати
+                    </button>
+                    <button
+                      onClick={() => handleDelete(shelf.id)}
+                      disabled={deleting === shelf.id}
+                      className="px-2 py-1.5 text-xs font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
+                    >
+                      {deleting === shelf.id ? "..." : "Видалити"}
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -375,80 +558,82 @@ export default function ShelvesPage() {
                 />
               </div>
 
-              {/* Planogram images upload */}
+              {/* ===== Planogram Upload Section ===== */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
                   Зображення планограми
-                  {formPlanogramImages.length > 0 && (
-                    <span className="text-gray-400 font-normal ml-1">
-                      ({formPlanogramImages.length} зобр.)
-                    </span>
-                  )}
                 </label>
 
-                {/* Existing images grid */}
-                {formPlanogramImages.length > 0 && (
-                  <div className="grid grid-cols-3 gap-2 mb-3">
-                    {formPlanogramImages.map((img, idx) => (
-                      <div key={idx} className="relative group">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={img.url}
-                          alt={img.label || `Секція ${idx + 1}`}
-                          className="w-full h-24 object-cover rounded-lg border border-gray-200"
-                        />
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 rounded-lg transition-colors" />
-                        <button
-                          type="button"
-                          onClick={() => removePlanogramImage(idx)}
-                          className="absolute top-1 right-1 p-0.5 bg-white rounded-full shadow-sm opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-100"
-                        >
-                          <svg className="w-3.5 h-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                        <p className="absolute bottom-1 left-1 right-1 text-[10px] text-white bg-black/50 rounded px-1 truncate">
-                          {img.label || `Секція ${idx + 1}`}
-                        </p>
+                {/* Mode toggle */}
+                <div className="flex bg-gray-100 rounded-xl p-1 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => setUploadMode("single")}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
+                      uploadMode === "single"
+                        ? "bg-white text-gray-900 shadow-sm"
+                        : "text-gray-500 hover:text-gray-700"
+                    }`}
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3 3h18M3 3v18m0-18h.257M21 3v18M3 21h18" />
+                    </svg>
+                    Одне зображення
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUploadMode("per-shelf")}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
+                      uploadMode === "per-shelf"
+                        ? "bg-white text-gray-900 shadow-sm"
+                        : "text-gray-500 hover:text-gray-700"
+                    }`}
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25a2.25 2.25 0 0 1-2.25-2.25v-2.25Z" />
+                    </svg>
+                    По полицях
+                  </button>
+                </div>
+
+                {/* Mode description */}
+                <p className="text-[11px] text-gray-400 mb-3">
+                  {uploadMode === "single"
+                    ? "Завантажте одне зображення всіх полиць стелажу"
+                    : `Завантажте окреме зображення для кожної з ${formShelvesCount} полиць`}
+                </p>
+
+                {/* Single image upload */}
+                {uploadMode === "single" && (
+                  <UploadZone
+                    slotIndex={-1}
+                    image={singleImage}
+                    label="Весь стелаж"
+                  />
+                )}
+
+                {/* Per-shelf upload */}
+                {uploadMode === "per-shelf" && (
+                  <div className="space-y-2">
+                    {perShelfImages.map((img, idx) => (
+                      <div key={idx} className="flex items-center gap-3">
+                        <div className="shrink-0 w-20 text-right">
+                          <span className="text-xs font-semibold text-gray-600">
+                            Полиця {idx + 1}
+                          </span>
+                        </div>
+                        <div className="flex-1">
+                          <UploadZone
+                            slotIndex={idx}
+                            image={img}
+                            label={`Полиця ${idx + 1}`}
+                            compact
+                          />
+                        </div>
                       </div>
                     ))}
                   </div>
                 )}
-
-                {/* Upload zone */}
-                <div
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setPlanogramDragOver(true);
-                  }}
-                  onDragLeave={() => setPlanogramDragOver(false)}
-                  onDrop={handlePlanogramDrop}
-                  className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
-                    planogramDragOver ? "border-blue-500 bg-blue-50" : "border-gray-300"
-                  }`}
-                >
-                  {uploadingPlanogram ? (
-                    <div className="flex flex-col items-center gap-2">
-                      <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                      <p className="text-xs text-gray-500">Завантаження...</p>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-gray-500">
-                      {formPlanogramImages.length > 0 ? "Додати ще зображення — " : ""}
-                      Перетягніть зображення або{" "}
-                      <label className="text-blue-600 hover:text-blue-700 cursor-pointer font-medium">
-                        оберіть файли
-                        <input
-                          type="file"
-                          accept="image/*"
-                          multiple
-                          onChange={handlePlanogramFileInput}
-                          className="hidden"
-                        />
-                      </label>
-                    </p>
-                  )}
-                </div>
               </div>
 
               <div className="flex justify-end gap-2 pt-2">

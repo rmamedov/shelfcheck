@@ -1,0 +1,28 @@
+device: "cuda"  # auto-fallback to cpu if unavailable
+
+detector:
+  weights: "models/yolo11x_shelf.pt"
+  conf_threshold: 0.25
+  iou_threshold: 0.5
+  min_bbox_area: 800
+  expected_shelf_count: null  # null = auto-detect via horizontal projection
+
+encoder:
+  backbone: "dinov2_vitb14"
+  embedding_dim: 768
+  batch_size: 64
+  cache_path: ".cache/embeddings.sqlite"
+
+gallery:
+  index_path: "models/gallery_v1.faiss"
+  metadata_path: "models/gallery_v1.meta.json"
+  top_k: 5
+
+recognize:
+  distance_threshold: 0.35
+  margin_threshold: 0.05
+
+api:
+  host: "0.0.0.0"
+  port: 8001
+  workers: 1
